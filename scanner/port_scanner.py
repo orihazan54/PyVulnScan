@@ -2,83 +2,117 @@
 Port Scanner Module
 -------------------
 This module is responsible for scanning network ports on a target host.
-It identifies which ports are open by attempting TCP connections.
+It uses multi-threading for fast, concurrent port scanning.
 """
 
 import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
 
-def scan_port(target: str, port: int, timeout: float = 1.0) -> bool:
+# Common ports to scan by default - the "top 20" most relevant for security assessment
+COMMON_PORTS = [
+    21,    # FTP
+    22,    # SSH
+    23,    # Telnet
+    25,    # SMTP
+    53,    # DNS
+    80,    # HTTP
+    110,   # POP3
+    111,   # RPCbind
+    135,   # MSRPC
+    139,   # NetBIOS
+    143,   # IMAP
+    443,   # HTTPS
+    445,   # SMB
+    993,   # IMAPS
+    995,   # POP3S
+    1723,  # PPTP
+    3306,  # MySQL
+    3389,  # RDP
+    5900,  # VNC
+    8080,  # HTTP-Proxy
+]
+
+
+def scan_port(target: str, port: int, timeout: float = 1.0) -> tuple[int, bool]:
     """
     Attempts to connect to a single port on the target host.
     
     Args:
-        target: The IP address or hostname to scan (e.g., "scanme.nmap.org")
+        target: The IP address or hostname to scan
         port: The port number to check (0-65535)
         timeout: How long to wait for a response, in seconds
     
     Returns:
-        True if the port is open, False otherwise.
+        A tuple (port, is_open) - the port number and whether it's open.
+        We return the port too so we know which result belongs to which port
+        when running concurrently.
     """
-    # Create a TCP socket
-    # AF_INET = IPv4, SOCK_STREAM = TCP
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
-    # Set timeout - so we don't wait forever on closed/filtered ports
     sock.settimeout(timeout)
     
     try:
-        # connect_ex returns 0 if successful, error code otherwise
         result = sock.connect_ex((target, port))
-        return result == 0
-    except socket.gaierror:
-        # gaierror = "get address info" error - hostname couldn't be resolved
-        print(f"[!] Hostname '{target}' could not be resolved")
-        return False
-    except socket.error as e:
-        # Generic socket error
-        print(f"[!] Socket error: {e}")
-        return False
+        return (port, result == 0)
+    except (socket.gaierror, socket.error):
+        return (port, False)
     finally:
-        # Always close the socket, even if an exception occurred
         sock.close()
 
 
-def scan_ports(target: str, ports: List[int], timeout: float = 1.0) -> List[int]:
+def scan_ports(
+    target: str,
+    ports: List[int] = None,
+    timeout: float = 1.0,
+    max_workers: int = 100
+) -> List[int]:
     """
-    Scans a list of ports on the target host.
+    Scans multiple ports concurrently using a thread pool.
     
     Args:
         target: The IP address or hostname to scan
-        ports: List of port numbers to check
+        ports: List of ports to scan. Defaults to COMMON_PORTS.
         timeout: Timeout per port, in seconds
+        max_workers: Maximum number of concurrent threads
     
     Returns:
-        List of open ports.
+        Sorted list of open ports.
     """
-    open_ports = []
+    # Use default port list if none provided
+    if ports is None:
+        ports = COMMON_PORTS
     
     print(f"[*] Starting scan on {target}")
-    print(f"[*] Scanning {len(ports)} ports...")
+    print(f"[*] Scanning {len(ports)} ports with {max_workers} threads...")
     
-    for port in ports:
-        if scan_port(target, port, timeout):
-            print(f"[+] Port {port} is OPEN")
-            open_ports.append(port)
+    open_ports = []
     
+    # ThreadPoolExecutor manages a pool of worker threads for us
+    # The 'with' statement ensures threads are properly cleaned up
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all scan tasks to the pool - they start running immediately
+        # 'futures' is a dict mapping each Future object to its port
+        futures = {
+            executor.submit(scan_port, target, port, timeout): port
+            for port in ports
+        }
+        
+        # as_completed yields futures as they finish, in completion order
+        # (NOT in submission order - that's the whole point!)
+        for future in as_completed(futures):
+            port, is_open = future.result()
+            if is_open:
+                print(f"[+] Port {port} is OPEN")
+                open_ports.append(port)
+    
+    # Sort because threads finish in unpredictable order
+    open_ports.sort()
     print(f"[*] Scan complete. Found {len(open_ports)} open ports.")
     return open_ports
 
 
-# This block runs only if you execute this file directly
-# (e.g., python scanner/port_scanner.py)
-# It doesn't run when the file is imported as a module
 if __name__ == "__main__":
-    # Test with common ports on scanme.nmap.org
-    # This is a server explicitly set up for testing scanners
     target = "scanme.nmap.org"
-    common_ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080]
-    
-    open_ports = scan_ports(target, common_ports)
+    open_ports = scan_ports(target)
     print(f"\nOpen ports: {open_ports}")
