@@ -243,6 +243,19 @@ def main():
     # Final Summary
     # ═══════════════════════════════════════════════
     display_summary(services, cve_results)
+    
+    # Generate HTML report
+    console.print("\n[bold]Generating HTML report...[/bold]")
+    from reporter.html_reporter import generate_html_report
+    
+    report_path = generate_html_report(
+        target=target,
+        services=services,
+        cve_results=cve_results,
+        output_path=f"report_{target.replace('.', '_')}.html"
+    )
+    
+    console.print(f"[green]✓ Report saved to:[/green] [cyan]{report_path}[/cyan]")
     console.print(f"\n[bold green]✓ Scan complete![/bold green]\n")
 
 
